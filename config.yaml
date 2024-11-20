@@ -16,19 +16,19 @@ openai:
   # Lower values = more focused/deterministic
   # Higher values = more creative/varied
   temperature: 0.7
-  # Number of news items to include in the final summary
-  max_news_items: 20
+  # Number of news items to include in the final summary -- summary screen
+  max_news_items: 10
 
 # Article Processing
 articles:
   # Maximum total articles to send to OpenAI for summarization
-  # This is the final number of articles that will be processed across all feeds combined
+  # This is the final number of articles that will be processed across all feeds combined -- send to OpenAI
   max_articles_to_process: 20
   
   # Maximum number of articles to fetch from each individual RSS feed
   # For example, if you have 5 feeds and this is set to 5, you could get up to 25 articles total
-  # before max_articles_to_process limit is applied
-  max_articles_per_feed: 10
+  # before max_articles_to_process limit is applied -- each feed
+  max_articles_per_feed: 20
 
 # Output Settings
 output:
