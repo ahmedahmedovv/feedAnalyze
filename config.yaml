@@ -1,0 +1,41 @@
+# RSS Feed Settings
+rss:
+  # Maximum length of article descriptions (characters) before truncation
+  max_description_length: 300
+  # Only include articles published within this many days
+  days_to_include: 1
+
+# OpenAI Settings
+openai:
+  # The OpenAI model to use for summarization
+  # Options: "gpt-4", "gpt-3.5-turbo", "gpt-4-turbo-preview"
+  model: "gpt-4o-mini"
+  # Maximum tokens in the API response
+  max_tokens: 4000
+  # Controls randomness in the output (0.0 to 1.0)
+  # Lower values = more focused/deterministic
+  # Higher values = more creative/varied
+  temperature: 0.7
+  # Number of news items to include in the final summary
+  max_news_items: 20
+
+# Article Processing
+articles:
+  # Maximum total articles to send to OpenAI for summarization
+  # This is the final number of articles that will be processed across all feeds combined
+  max_articles_to_process: 20
+  
+  # Maximum number of articles to fetch from each individual RSS feed
+  # For example, if you have 5 feeds and this is set to 5, you could get up to 25 articles total
+  # before max_articles_to_process limit is applied
+  max_articles_per_feed: 10
+
+# Output Settings
+output:
+  # Directory where summary reports will be saved
+  reports_directory: "reports"
+  # Date format for filenames and report headers
+  # %Y = year (2024)
+  # %m = month (01-12)
+  # %d = day (01-31)
+  date_format: "%Y-%m-%d" 

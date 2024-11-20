@@ -2,7 +2,7 @@ SYSTEM_PROMPT = """You are a professional news summarizer. Create a structured d
 
 1. Start with a "Daily News Summary" header including the current date
 2. Format each news item as a numbered point
-3. Provide EXACTLY 20 most important news items (no more, no less), organized in the following priority order:
+3. Provide EXACTLY {max_news_items} most important news items (no more, no less), organized in the following priority order:
    a. Critical national security and defense news
    b. Major political developments
    c. Significant economic news

@@ -4,14 +4,26 @@ import os
 from openai import OpenAI
 from dotenv import load_dotenv
 from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+import yaml
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
 
+def load_config():
+    config_path = Path(__file__).parent / 'config.yaml'
+    with open(config_path, 'r') as file:
+        return yaml.safe_load(file)
+
+# Load config at module level
+CONFIG = load_config()
+
 def fetch_rss_feeds():
-    # Read RSS links from file
+    # Read RSS links from file without limiting the number of feeds
     with open('rss_links.txt', 'r') as file:
         rss_urls = [line.strip() for line in file if line.strip()]
+    
+    print(f"\nProcessing {len(rss_urls)} feeds")
     
     articles = []
     today = datetime.now().date()
@@ -19,9 +31,13 @@ def fetch_rss_feeds():
     for url in rss_urls:
         try:
             feed = feedparser.parse(url)
-            print(f"Fetching from {url}: Found {len(feed.entries)} entries")
+            total_entries = len(feed.entries)
+            # Limit entries per feed
+            entries = feed.entries[:CONFIG['articles']['max_articles_per_feed']]
             
-            for entry in feed.entries:
+            print(f"Fetching from {url}: Found {total_entries} entries, processing {len(entries)} (max: {CONFIG['articles']['max_articles_per_feed']})")
+            
+            for entry in entries:
                 try:
                     # Try different date fields that might be present in the feed
                     if hasattr(entry, 'published_parsed'):
@@ -29,17 +45,16 @@ def fetch_rss_feeds():
                     elif hasattr(entry, 'updated_parsed'):
                         pub_date = datetime(*entry.updated_parsed[:6]).date()
                     else:
-                        # If no date parsing works, assume it's recent and include it
                         pub_date = today
                     
-                    # Be more lenient with date matching - include articles from last 24 hours
-                    if (today - pub_date).days <= 1:
+                    # Use configured days_to_include
+                    if (today - pub_date).days <= CONFIG['rss']['days_to_include']:
                         articles.append({
                             'title': entry.title,
                             'description': getattr(entry, 'description', 
                                          getattr(entry, 'summary', 'No description available')),
                             'link': entry.link,
-                            'date': pub_date.strftime('%Y-%m-%d')
+                            'date': pub_date.strftime(CONFIG['output']['date_format'])
                         })
                         
                 except Exception as e:
@@ -52,26 +67,84 @@ def fetch_rss_feeds():
     print(f"Total articles collected: {len(articles)}")
     return articles
 
-def summarize_with_openai(articles, max_news=20):
+def calculate_article_priority(article):
+    """
+    Calculate priority score for an article based on multiple factors.
+    Higher score = higher priority
+    """
+    score = 0
+    
+    # Priority keywords in title or description (customize these lists based on your needs)
+    critical_keywords = ['breaking', 'urgent', 'critical', 'emergency', 'alert', 'crisis']
+    important_keywords = ['announced', 'official', 'update', 'major', 'significant']
+    
+    title = article['title'].lower()
+    description = article['description'].lower()
+    
+    # Check for critical keywords (higher weight)
+    for keyword in critical_keywords:
+        if keyword in title:
+            score += 5  # Higher score for critical keywords in title
+        if keyword in description:
+            score += 3  # Lower score for critical keywords in description
+    
+    # Check for important keywords (lower weight)
+    for keyword in important_keywords:
+        if keyword in title:
+            score += 3  # Higher score for important keywords in title
+        if keyword in description:
+            score += 1  # Lower score for important keywords in description
+    
+    # Boost score for recent articles
+    try:
+        article_date = datetime.strptime(article['date'], CONFIG['output']['date_format'])
+        hours_old = (datetime.now() - article_date).total_seconds() / 3600
+        if hours_old < 6:  # Extra points for very recent news
+            score += 4
+        elif hours_old < 12:
+            score += 2
+        elif hours_old < 24:
+            score += 1
+    except:
+        pass  # If date parsing fails, no time bonus
+    
+    return score
+
+def summarize_with_openai(articles):
     client = OpenAI()
     
     if not articles:
         return "No news articles found for today."
     
-    # Sort articles by date (newest first)
-    sorted_articles = sorted(articles, key=lambda x: x['date'], reverse=True)
+    # Score and sort articles by priority
+    articles_with_scores = [
+        (article, calculate_article_priority(article))
+        for article in articles
+    ]
     
-    # Limit the number of articles to process (reduce token count)
-    max_articles_to_process = 100  # Adjust this number if needed
-    articles_to_process = sorted_articles[:max_articles_to_process]
+    # Sort by score (descending) and then by date (newest first) for tiebreakers
+    sorted_articles = [
+        article for article, score in sorted(
+            articles_with_scores,
+            key=lambda x: (x[1], x[0]['date']),
+            reverse=True
+        )
+    ]
     
-    # Prepare content for summarization
+    # Take top N articles based on config
+    articles_to_process = sorted_articles[:CONFIG['articles']['max_articles_to_process']]
+    
+    # Debug info to see selection process
+    print("\nSelected articles for processing:")
+    for i, article in enumerate(articles_to_process, 1):
+        score = next(score for a, score in articles_with_scores if a == article)
+        print(f"{i}. [{score}] {article['title']}")
+    
     articles_content = ""
     for article in articles_to_process:
-        # Truncate description more aggressively
         description = article['description']
-        if len(description) > 300:  # Reduced from 500 to 300
-            description = description[:300] + "..."
+        if len(description) > CONFIG['rss']['max_description_length']:
+            description = description[:CONFIG['rss']['max_description_length']] + "..."
             
         articles_content += f"Title: {article['title']}\n"
         articles_content += f"Source: {article.get('source', extract_source_from_url(article['link']))}\n"
@@ -79,20 +152,18 @@ def summarize_with_openai(articles, max_news=20):
         articles_content += f"Description: {description}\n"
         articles_content += f"Link: {article['link']}\n\n"
 
-    # Format the user prompt with the articles content
     user_prompt = USER_PROMPT_TEMPLATE.format(articles=articles_content)
-
-    # Update the system prompt
-    modified_system_prompt = SYSTEM_PROMPT + f"\nImportant: Select and summarize EXACTLY {max_news} most important news items, prioritizing by category (security/defense, political, economic, technology, other)."
+    modified_system_prompt = SYSTEM_PROMPT.format(max_news_items=CONFIG['openai']['max_news_items'])
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=CONFIG['openai']['model'],
             messages=[
                 {"role": "system", "content": modified_system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=4000  # Limit the response size
+            max_tokens=CONFIG['openai']['max_tokens'],
+            temperature=CONFIG['openai']['temperature']
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -101,15 +172,16 @@ def summarize_with_openai(articles, max_news=20):
         if "context length" in str(e).lower():
             try:
                 # Try again with half the articles
-                half_content = "\n\n".join(articles_content.split("\n\n")[:max_articles_to_process//2])
+                half_content = "\n\n".join(articles_content.split("\n\n")[:CONFIG['articles']['max_articles_to_process']//2])
                 user_prompt = USER_PROMPT_TEMPLATE.format(articles=half_content)
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=CONFIG['openai']['model'],
                     messages=[
                         {"role": "system", "content": modified_system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    max_tokens=4000
+                    max_tokens=CONFIG['openai']['max_tokens'],
+                    temperature=CONFIG['openai']['temperature']
                 )
                 return response.choices[0].message.content
             except Exception as e2:
@@ -129,14 +201,11 @@ def extract_source_from_url(url):
         return "Unknown Source"
 
 def save_report(summary):
-    # Create reports directory if it doesn't exist
-    os.makedirs('reports', exist_ok=True)
+    os.makedirs(CONFIG['output']['reports_directory'], exist_ok=True)
     
-    # Generate filename with current date
-    filename = f"reports/news_summary_{datetime.now().strftime('%Y-%m-%d')}.txt"
+    filename = f"{CONFIG['output']['reports_directory']}/news_summary_{datetime.now().strftime(CONFIG['output']['date_format'])}.txt"
     
-    # Add a note about clickable links at the top of the file
-    header = f"Daily News Summary - {datetime.now().strftime('%Y-%m-%d')}\n"
+    header = f"Daily News Summary - {datetime.now().strftime(CONFIG['output']['date_format'])}\n"
     header += "Note: Links in square brackets [] are clickable in most text editors.\n\n"
     
     with open(filename, 'w', encoding='utf-8') as file:
